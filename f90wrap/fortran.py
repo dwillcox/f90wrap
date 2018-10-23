@@ -776,34 +776,54 @@ def f2c_type(typename, kind_map):
     """
 
     # default conversion from fortran to C types
+    # keyed by (type, kind)
     default_f2c_type = {
-        'character': 'char',
-        'integer': 'int',
-        'real': 'float',
-        'double precision': 'double',
-        'logical': 'int',
+        ('character', ''): 'char',
+        ('integer', ''): 'int',
+        ('real', ''): 'float',
+        ('real', '4'): 'float',
+        ('real', '8'): 'double',
+        ('real', '16'): 'long_double',
+        ('complex', ''): 'complex_float',
+        ('complex', '8'): 'complex_float',
+        ('complex', '16'): 'complex_double',
+        ('complex', '32'): 'complex_long_double',
+        ('double precision', ''): 'double',
+        ('logical', ''): 'int',
         }
+
+    print("In f2c_type, got typename = {}".format(typename))
 
     type, kind = split_type_kind(typename)
     kind = kind.replace('(', '').replace(')', '')
 
+    raise_error = ""
+    c_type = None
 
     if type in kind_map:
         if kind in kind_map[type]:
             c_type = kind_map[type][kind]
         else:
-            raise RuntimeError('Unknown combination of type "%s" and kind "%s"' % (type, kind) +
+            raise_error = ('Unknown combination of type "%s" and kind "%s"' % (type, kind) +
                                ' - add to kind map and try again')
-    else:
-        if type in default_f2c_type:
-            c_type = default_f2c_type[type]
+
+    if not c_type:
+        if (type, kind) in default_f2c_type:
+            c_type = default_f2c_type[(type, kind)]
+        elif (type, '') in default_f2c_type:
+            c_type = default_f2c_type[(type, '')]
         elif type.startswith('type'):
             return 'type'
         elif type.startswith('class'):
             return 'type'
         else:
-            raise RuntimeError('Unknown type "%s" - ' % type +
+            raise_error = ('Unknown (type, kind) "(%s, %s)" - ' % (type, kind) +
                                'add to kind map and try again')
+
+    if raise_error and not c_type:
+        raise RuntimeError(raise_error)
+
+    print("............. converting to {}".format(c_type))
     return c_type
 
 
