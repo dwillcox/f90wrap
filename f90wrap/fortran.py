@@ -808,6 +808,8 @@ def f2c_type(typename, kind_map):
     if not c_type:
         if (type, kind) in default_f2c_type:
             c_type = default_f2c_type[(type, kind)]
+        elif type.startswith('character'):
+            c_type = default_f2c_type[(type, '')]
         elif type.startswith('type'):
             return 'type'
         elif type.startswith('class'):
