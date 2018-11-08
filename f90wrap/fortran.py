@@ -792,8 +792,6 @@ def f2c_type(typename, kind_map):
         ('logical', ''): 'int',
         }
 
-    print("In f2c_type, got typename = {}".format(typename))
-
     type, kind = split_type_kind(typename)
     kind = kind.replace('(', '').replace(')', '')
 
@@ -823,7 +821,6 @@ def f2c_type(typename, kind_map):
     if raise_error and not c_type:
         raise RuntimeError(raise_error)
 
-    print("............. converting to {}".format(c_type))
     return c_type
 
 
