@@ -70,9 +70,11 @@ class F90WrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
     """
 
     def __init__(self, prefix, sizeof_fortran_t, string_lengths, abort_func,
-                 kind_map, types, default_to_inout):
+                 kind_map, types, default_to_inout, max_length=None):
+        if max_length is None:
+            max_length = 120
         cg.CodeGenerator.__init__(self, indent=' ' * 4,
-                                  max_length=80,
+                                  max_length=max_length,
                                   continuation='&',
                                   comment='!')
         ft.FortranVisitor.__init__(self)
@@ -165,6 +167,8 @@ class F90WrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
                     if only is None:
                         continue
                     for symbol in only:
+                        if all_uses[mod] is None:
+                            all_uses[mod] = []
                         if symbol not in all_uses[mod]:
                             all_uses[mod] += [symbol]
                 elif only is not None:
@@ -187,7 +191,7 @@ class F90WrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
         self.write('end type ' + ty.name)
         self.write()
 
-    def write_type_lines(self, tname):
+    def write_type_lines(self, tname, recursive=False):
         """
         Write a pointer type for a given type name
 
@@ -195,11 +199,19 @@ class F90WrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
         ----------
         tname : `str`
             Should be the name of a derived type in the wrapped code.
+
+        recursive : `boolean`
+            Adjusts array pointer for recursive derived type array
         """
         tname = ft.strip_type(tname)
-        self.write("""type %(typename)s_ptr_type
+        if not recursive:
+            self.write("""type %(typename)s_ptr_type
     type(%(typename)s), pointer :: p => NULL()
 end type %(typename)s_ptr_type""" % {'typename': tname})
+        else:
+            self.write("""type %(typename)s_rec_ptr_type
+    type(%(typename)s), pointer :: p => NULL()
+end type %(typename)s_rec_ptr_type""" % {'typename': tname})
 
     def write_arg_decl_lines(self, node):
         """
@@ -320,8 +332,8 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
                     raise RuntimeError("assignment(=) interface with len(arg_names) != 2")
                 arg_names = [arg_name.split('=')[1] for arg_name in arg_names]
                 self.write('%(lhs)s = %(rhs)s' %
-                            {'lhs': arg_names[0],
-                             'rhs': arg_names[1]})
+                           {'lhs': arg_names[0],
+                            'rhs': arg_names[1]})
             else:
                 self.write('call %(sub_name)s(%(arg_names)s)' %
                            {'sub_name': func_name,
@@ -350,7 +362,8 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         call_name = node.name
         if hasattr(node, 'call_name'):
             call_name = node.call_name
-        logging.info('F90WrapperGenerator visiting routine %s call_name %s mod_name %r' % (node.name, call_name, node.mod_name))
+        logging.info(
+            'F90WrapperGenerator visiting routine %s call_name %s mod_name %r' % (node.name, call_name, node.mod_name))
         self.write("subroutine %(sub_name)s%(arg_names)s" %
                    {'sub_name': self.prefix + node.name,
                     'arg_names': '(' + ', '.join([arg.name for arg in node.arguments]) + ')'
@@ -366,7 +379,7 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
 
         self.write()
         for tname in node.types:
-            if 'super-type' in self.types[tname].doc:
+            if tname in self.types and 'super-type' in self.types[tname].doc:
                 self.write_super_type_lines(self.types[tname])
             self.write_type_lines(tname)
         self.write_arg_decl_lines(node)
@@ -421,7 +434,7 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         else:
             this = 'dummy_this, '
 
-        self.write('subroutine %s%s__array__%s(%snd, dtype, dshape, dloc)' % (self.prefix, t.name, el.name, this))
+        self.write('subroutine %s%s__array__%s(%snd, dtype, dshape, dloc)' % (self.prefix, t.name, el.orig_name, this))
         self.indent()
 
         if isinstance(t, ft.Module):
@@ -452,9 +465,9 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         self.write('dtype = %s' % ft.fortran_array_type(el.type, self.kind_map))
         if isinstance(t, ft.Type):
             self.write('this_ptr = transfer(this, this_ptr)')
-            array_name = 'this_ptr%%p%%%s' % el.name
+            array_name = 'this_ptr%%p%%%s' % el.orig_name
         else:
-            array_name = '%s_%s' % (t.name, el.name)
+            array_name = '%s_%s' % (t.name, el.orig_name)
 
         if 'allocatable' in el.attributes:
             self.write('if (allocated(%s)) then' % array_name)
@@ -474,7 +487,7 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
             self.write('end if')
 
         self.dedent()
-        self.write('end subroutine %s%s__array__%s' % (self.prefix, t.name, el.name))
+        self.write('end subroutine %s%s__array__%s' % (self.prefix, t.name, el.orig_name))
         self.write()
 
     def _write_dt_array_wrapper(self, t, element, dims,
@@ -550,7 +563,7 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         else:
             this = 'dummy_this'
         safe_i = self.prefix + 'i'  # YANN: i could be in the "uses" clauses
-
+        # TODO: check if el.orig_name would be needed here instead of el.name
         self.write('subroutine %s%s__array_%sitem__%s(%s, %s, %s)' % (self.prefix, t.name,
                                                                       getset, el.name,
                                                                       this,
@@ -584,9 +597,12 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         if 'super-type' in t.doc:
             self.write_super_type_lines(t)
 
+        # Check if the type has recursive definition:
+        same_type = (ft.strip_type(t.name) == ft.strip_type(el.type))
+
         if isinstance(t, ft.Type):
             self.write_type_lines(t.name)
-        self.write_type_lines(el.type)
+        self.write_type_lines(el.type,same_type)
 
         self.write('integer, intent(in) :: %s(%d)' % (this, sizeof_fortran_t))
         if isinstance(t, ft.Type):
@@ -596,7 +612,10 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
             array_name = '%s_%s' % (t.name, el.name)
         self.write('integer, intent(in) :: %s' % (safe_i))
         self.write('integer, intent(%s) :: %s(%d)' % (inout, el.name + 'item', sizeof_fortran_t))
-        self.write('type(%s_ptr_type) :: %s_ptr' % (ft.strip_type(el.type), el.name))
+        if not same_type:
+            self.write('type(%s_ptr_type) :: %s_ptr' % (ft.strip_type(el.type), el.name))
+        else:
+            self.write('type(%s_rec_ptr_type) :: %s_ptr' % (ft.strip_type(el.type),el.name))
         self.write()
         if isinstance(t, ft.Type):
             self.write('this_ptr = transfer(%s, this_ptr)' % (this))
@@ -684,9 +703,12 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         self.write()
         if 'super-type' in t.doc:
             self.write_super_type_lines(t)
+
+        # Check if the type has recursive definition:
+        same_type = (ft.strip_type(t.name) == ft.strip_type(el.type))
         if isinstance(t, ft.Type):
             self.write_type_lines(t.name)
-        self.write_type_lines(el.type)
+        self.write_type_lines(el.type,same_type)
         self.write('integer, intent(out) :: %s' % (safe_n))
         self.write('integer, intent(in) :: %s(%d)' % (this, sizeof_fortran_t))
         if isinstance(t, ft.Type):
@@ -780,7 +802,7 @@ end type %(typename)s_ptr_type""" % {'typename': tname})
         if isinstance(t, ft.Type):
             self.write_type_lines(t.name)
 
-        if el.type.startswith('type') and not (el.type == 'type('+t.name+')'):
+        if el.type.startswith('type') and not (el.type == 'type(' + t.name + ')'):
             self.write_type_lines(el.type)
 
         if isinstance(t, ft.Type):

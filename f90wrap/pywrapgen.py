@@ -29,8 +29,18 @@ from f90wrap.transform import ArrayDimensionConverter
 from f90wrap import fortran as ft
 from f90wrap import codegen as cg
 
+
+def py_arg_value(arg):
+    # made global from PythonWrapperGenerator.visit_Procedure so that other functions can use it
+    if 'optional' in arg.attributes or arg.value is None:
+        return '=None'
+    else:
+        return ''
+
+
 def normalise_class_name(name, name_map):
     return name_map.get(name.lower(), name.title())
+
 
 def format_call_signature(node):
     if isinstance(node, ft.Procedure):
@@ -59,15 +69,15 @@ def format_call_signature(node):
         if had_optional:
             sig += ']'
         sig += ')'
-        rex = re.compile(r'\s+') # collapse multiple whitespace
+        rex = re.compile(r'\s+')  # collapse multiple whitespace
         sig = rex.sub(' ', sig)
         return sig
     elif isinstance(node, ft.Module):
         return 'Module %s' % node.name
     elif isinstance(node, ft.Element):
         return ('Element %s ftype=%s pytype=%s' %
-                  (node.name, node.type,
-                   ft.f2py_type(node.type)))
+                (node.name, node.type,
+                 ft.f2py_type(node.type)))
     elif isinstance(node, ft.Interface):
         if hasattr(node, 'method_name'):
             name = node.method_name
@@ -76,6 +86,7 @@ def format_call_signature(node):
         return '%s(*args, **kwargs)' % name
     else:
         return str(node)
+
 
 def format_doc_string(node):
     """
@@ -130,7 +141,7 @@ def format_doc_string(node):
         doc.append('Overloaded interface containing the following procedures:')
         for proc in node.procedures:
             doc.append('  %s' % (hasattr(proc, 'method_name')
-                                and proc.method_name or proc.name))
+                                 and proc.method_name or proc.name))
 
     doc += [''] + node.doc[:]  # incoming docstring from Fortran source
 
@@ -140,11 +151,13 @@ def format_doc_string(node):
 class PythonWrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
     def __init__(self, prefix, mod_name, types, f90_mod_name=None,
                  make_package=False, kind_map=None, init_file=None,
-                 py_mod_names=None, class_names=None):
+                 py_mod_names=None, class_names=None, max_length=None):
+        if max_length is None:
+            max_length = 80
         cg.CodeGenerator.__init__(self, indent=' ' * 4,
-                               max_length=80,
-                               continuation='\\',
-                               comment='#')
+                                  max_length=max_length,
+                                  continuation='\\',
+                                  comment='#')
         ft.FortranVisitor.__init__(self)
         self.prefix = prefix
         self.py_mod_name = mod_name
@@ -176,7 +189,6 @@ class PythonWrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
         imp_lines += ['\n']
         self.imports = set()
         return self.writelines(imp_lines, insert=insert, level=0)
-
 
     def visit_Root(self, node):
         """
@@ -229,7 +241,7 @@ class PythonWrapperGenerator(ft.FortranVisitor, cg.CodeGenerator):
 
         self.generic_visit(node)
 
-        properties = []         # Collect list of properties for a __repr__()
+        properties = []  # Collect list of properties for a __repr__()
         for el in node.elements:
             dims = list(filter(lambda x: x.startswith('dimension'), el.attributes))
             if len(dims) == 0:  # proper scalar type (normal or derived)
@@ -278,41 +290,81 @@ except ValueError:
             self.dedent()  # finish the FortranModule class
             self.write()
             # instantise the module class
-            self.write('%s = %s()' % (node.name, node.name.title()))
+            self.write('%s = %s()' % (node.name, cls_name))
             self.write()
 
         self.current_module = None
 
-
     def write_constructor(self, node):
         handle_arg = ft.Argument(name='handle',
-                              filename=node.filename,
-                              doc=['Opaque reference to existing derived type instance'],
-                              lineno=node.lineno,
-                              attributes=['intent(in)', 'optional'],
-                              type='integer')
+                                 filename=node.filename,
+                                 doc=['Opaque reference to existing derived type instance'],
+                                 lineno=node.lineno,
+                                 attributes=['intent(in)', 'optional'],
+                                 type='integer')
         handle_arg.py_name = 'handle'
 
         # special case for constructors: return value is 'self' argument,
         # plus we add an extra optional argument
-        args = node.ret_val + node.arguments + [handle_arg]
+        args = node.arguments + [handle_arg]
 
         dct = dict(func_name=node.name,
                    prefix=self.prefix,
                    mod_name=self.f90_mod_name,
                    py_arg_names=', '.join(['%s%s' % (arg.py_name,
                                                      'optional' in arg.attributes and '=None' or '')
-                                                     for arg in args ]),
+                                           for arg in args]),
                    f90_arg_names=', '.join(['%s=%s' % (arg.name, arg.py_value) for arg in node.arguments]))
 
-        self.write("def __init__(%(py_arg_names)s):" % dct)
+        self.write("def __init__(self, %(py_arg_names)s):" % dct)
         self.indent()
         self.write(format_doc_string(node))
+        for arg in node.arguments:
+            if 'optional' in arg.attributes and '._handle' in arg.py_value:
+                dct['f90_arg_names'] = dct['f90_arg_names'].replace(arg.py_value,
+                                                                    ('(None if %(arg_py_name)s is None else %('
+                                                                     'arg_py_name)s._handle)') %
+                                                                    {'arg_py_name': arg.py_name})
         self.write('f90wrap.runtime.FortranDerivedType.__init__(self)')
-        self.write('self._handle = %(mod_name)s.%(prefix)s%(func_name)s(%(f90_arg_names)s)' % dct)
+
+        self.write('result = %(mod_name)s.%(prefix)s%(func_name)s(%(f90_arg_names)s)' % dct)
+        self.write('self._handle = result[0] if isinstance(result, tuple) else result')
         self.dedent()
         self.write()
 
+    def write_classmethod(self, node):
+
+        dct = dict(func_name=node.name,
+                   method_name=hasattr(node, 'method_name') and node.method_name or node.name,
+                   prefix=self.prefix,
+                   mod_name=self.f90_mod_name,
+                   py_arg_names=', '.join([arg.py_name + py_arg_value(arg) for arg in node.arguments]),
+                   f90_arg_names=', '.join(['%s=%s' % (arg.name, arg.py_value) for arg in node.arguments]),
+                   call='')
+
+        dct['call'] = 'result = '
+        for arg in node.arguments:
+            if 'optional' in arg.attributes and '._handle' in arg.py_value:
+                dct['f90_arg_names'] = dct['f90_arg_names'].replace(arg.py_value,
+                                                                    ('None if %(arg_py_name)s is None else %('
+                                                                     'arg_py_name)s._handle') %
+                                                                    {'arg_py_name': arg.py_name})
+        call_line = '%(call)s%(mod_name)s.%(prefix)s%(func_name)s(%(f90_arg_names)s)' % dct
+
+        self.write('@classmethod')
+        self.write("def %(method_name)s(cls, %(py_arg_names)s):" % dct)
+        self.indent()
+        self.write(format_doc_string(node))
+        self.write('bare_class = cls.__new__(cls)')
+        self.write('f90wrap.runtime.FortranDerivedType.__init__(bare_class)')
+
+        self.write(call_line)
+
+        self.write('bare_class._handle = result[0] if isinstance(result, tuple) else result')
+        self.write('return bare_class')
+
+        self.dedent()
+        self.write()
 
     def write_destructor(self, node):
         dct = dict(func_name=node.name,
@@ -320,7 +372,7 @@ except ValueError:
                    mod_name=self.f90_mod_name,
                    py_arg_names=', '.join(['%s%s' % (arg.py_name,
                                                      'optional' in arg.attributes and '=None' or '')
-                                                     for arg in node.arguments]),
+                                           for arg in node.arguments]),
                    f90_arg_names=', '.join(['%s=%s' % (arg.name, arg.py_value) for arg in node.arguments]))
         self.write("def __del__(%(py_arg_names)s):" % dct)
         self.indent()
@@ -332,16 +384,12 @@ except ValueError:
         self.dedent()
         self.write()
 
-
     def visit_Procedure(self, node):
-        def py_arg_value(arg):
-            if 'optional' in arg.attributes or arg.value is None:
-                return '=None'
-            else:
-                return ''
 
         logging.info('PythonWrapperGenerator visiting routine %s' % node.name)
-        if 'constructor' in node.attributes:
+        if 'classmethod' in node.attributes:
+            self.write_classmethod(node)
+        elif 'constructor' in node.attributes:
             self.write_constructor(node)
         elif 'destructor' in node.attributes:
             self.write_destructor(node)
@@ -350,7 +398,7 @@ except ValueError:
                        method_name=hasattr(node, 'method_name') and node.method_name or node.name,
                        prefix=self.prefix,
                        mod_name=self.f90_mod_name,
-                       py_arg_names=', '.join([arg.py_name+py_arg_value(arg) for arg in node.arguments]),
+                       py_arg_names=', '.join([arg.py_name + py_arg_value(arg) for arg in node.arguments]),
                        f90_arg_names=', '.join(['%s=%s' % (arg.name, arg.py_value) for arg in node.arguments]),
                        call='')
 
@@ -367,7 +415,8 @@ except ValueError:
             for arg in node.arguments:
                 if 'optional' in arg.attributes and '._handle' in arg.py_value:
                     dct['f90_arg_names'] = dct['f90_arg_names'].replace(arg.py_value,
-                                                                        ('None if %(arg_py_name)s is None else %(arg_py_name)s._handle') %
+                                                                        (
+                                                                            'None if %(arg_py_name)s is None else %(arg_py_name)s._handle') %
                                                                         {'arg_py_name': arg.py_name})
             call_line = '%(call)s%(mod_name)s.%(prefix)s%(func_name)s(%(f90_arg_names)s)' % dct
             self.write(call_line)
@@ -386,7 +435,7 @@ except ValueError:
                         #         self.imports.add((self.py_mod_name + '.' + cls_mod_name, cls_name))
                         # else:
                         #     cls_name = cls_mod_name + '.' + cls_name
-                        self.write('%s = %s.from_handle(%s)' %
+                        self.write('%s = %s.from_handle(%s, alloc=True)' %
                                    (ret_val.name, cls_name, ret_val.name))
                 self.write('return %(result)s' % dct)
 
@@ -405,10 +454,10 @@ except ValueError:
         proc_names = []
         for proc in node.procedures:
             proc_name = ''
-            if not self.make_package:
-                proc_name += proc.mod_name.title()+'.'
+            if not self.make_package and hasattr(proc, 'mod_name'):
+                proc_name += normalise_class_name(proc.mod_name, self.class_names) + '.'
             elif cls_name is not None:
-                proc_name += cls_name+'.'
+                proc_name += cls_name + '.'
             if hasattr(proc, 'method_name'):
                 proc_name += proc.method_name
             else:
@@ -438,7 +487,6 @@ except ValueError:
         self.dedent()
         self.write()
 
-
     def visit_Type(self, node):
         logging.info('PythonWrapperGenerator visiting type %s' % node.name)
         node.dt_array_initialisers = []
@@ -467,7 +515,6 @@ except ValueError:
         self.write()
         self.dedent()
         self.write()
-
 
     def write_scalar_wrappers(self, node, el, properties):
         dct = dict(el_name=el.name,
@@ -609,7 +656,6 @@ return %(el_name)s''' % dct)
     ''' % dct)
             self.write()
 
-
     def write_sc_array_wrapper(self, node, el, dims, properties):
         dct = dict(el_name=el.name,
                    el_name_get=el.name,
@@ -658,7 +704,6 @@ return %(el_name)s""" % dct)
 """ % dct)
         self.write()
 
-
     def write_dt_array_wrapper(self, node, el, dims):
         if el.type.startswith('type') and len(ArrayDimensionConverter.split_dimensions(dims)) != 1:
             return
@@ -680,7 +725,7 @@ return %(el_name)s""" % dct)
                    parent='self',
                    doc=format_doc_string(el),
                    cls_name=cls_name,
-                   cls_mod_name=cls_mod_name + '.')
+                   cls_mod_name=cls_mod_name.title() + '.')
 
         if isinstance(node, ft.Module):
             dct['parent'] = 'f90wrap.runtime.empty_type'

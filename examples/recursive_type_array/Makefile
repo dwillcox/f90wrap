@@ -46,7 +46,7 @@ endif
 # PROJECT CONFIG, do not put spaced behind the variables
 # ======================================================================
 # Python module name
-PYTHON_MODN = issue50
+PYTHON_MODN = recursive_type_array
 # mapping between Fortran and C types
 KIND_MAP = kind_map
 

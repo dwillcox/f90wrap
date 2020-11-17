@@ -1,6 +1,6 @@
 #  f90wrap: F90 to Python interface generator with derived type support
 #
-#  Copyright James Kermode 2011-2018
+#  Copyright James Kermode 2011-2020
 #
 #  This file is part of f90wrap
 #  For the latest version see github.com/jameskermode/f90wrap
@@ -20,9 +20,12 @@
 # 
 #  If you would like to license the source code under different terms,
 #  please contact James Kermode, james.kermode@gmail.com
-from __future__ import print_function, absolute_import, division
-import _examplepkg
-import f90wrap.runtime
-import logging
-import examplepkg.class_example
+import test
 
+assert hasattr(test, 'routine_member_procedures')
+assert not hasattr(test, 'member_procedure')
+assert not hasattr(test, 'member_function')
+
+out1, out2 = test.routine_member_procedures(1, 2)
+assert out1 == 7
+assert out2 == 23

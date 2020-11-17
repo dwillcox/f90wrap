@@ -41,8 +41,10 @@
 # MA 02111-1307 USA
 
 import string
+import sys
+import os
 
-from f90wrap.fortran import *
+from f90wrap.fortran import *       #fixme: remove star import
 
 # Define some regular expressions
 
@@ -79,7 +81,7 @@ funct = re.compile('^((' + types + r')\s+)*function', re.IGNORECASE)
 # funct       = re.compile('^function',re.IGNORECASE)
 funct_end = re.compile('^end\s*function\s*(\w*)|end$', re.IGNORECASE)
 
-prototype = re.compile(r'^module procedure ([a-zA-Z0-9_,\s]*)')
+prototype = re.compile(r'^module procedure ([a-zA-Z0-9_,\s]*)', re.IGNORECASE)
 
 contains = re.compile('^contains', re.IGNORECASE)
 
@@ -107,16 +109,15 @@ result_re = re.compile(r'result\s*\((.*?)\)', re.IGNORECASE)
 
 arg_split = re.compile(r'\s*(\w*)\s*(\(.+?\))?\s*(=\s*[\w\.]+\s*)?,?\s*')
 
-size_re = re.compile(r'size\(([^,]+),([^\)]+)\)')
-dimension_re = re.compile(r'^([-0-9.e]+)|((rank\(.*\))|(size\(.*\))|(len\(.*\))|(slen\(.*\)))$')
+size_re = re.compile(r'size\(([^,]+),([^\)]+)\)', re.IGNORECASE)
+dimension_re = re.compile(r'^([-0-9.e]+)|((rank\(.*\))|(size\(.*\))|(len\(.*\))|(slen\(.*\)))$', re.IGNORECASE)
 
 alnum = string.ascii_letters + string.digits + '_'
 
-valid_dim_re = re.compile(r'^(([-0-9.e]+)|(size\([_a-zA-Z0-9\+\-\*\/]*\))|(len\(.*\)))$')
+valid_dim_re = re.compile(r'^(([-0-9.e]+)|(size\([_a-zA-Z0-9\+\-\*\/]*\))|(len\(.*\)))$', re.IGNORECASE)
 
 public = re.compile('(^public$)|(^public\s*(\w+)\s*$)|(^public\s*::\s*(\w+)(\s*,\s*\w+)*$)', re.IGNORECASE)
 private = re.compile('(^private$)|(^private\s*(\w+)\s*$)|(^private\s*::\s*(\w+)(\s*,\s*\w+)*$)', re.IGNORECASE)
-
 
 def remove_delimited(line, d1, d2):
     bk = 0
@@ -215,9 +216,13 @@ class F90File(object):
 
         while (cline == '' and len(self.lines) != 0):
             cline = self.lines[0].strip()
+            while (cline == '' and len(self.lines) != 1): # issue105 - rm empty lines
+                self.lines = self.lines[1:]
+                cline = self.lines[0].strip()
+
             if cline.find('_FD') == 1:
                 break
-
+    
             # jrk33 - join lines before removing delimiters
 
             # Join together continuation lines
@@ -229,6 +234,9 @@ class F90File(object):
                 cont_index = cline.find('&')
                 try:
                     cont2 = self.lines[1].strip()
+                    while (cont2 == '' and len(self.lines) != 2): # issue105 - rm empty lines
+                        self.lines[1:] = self.lines[2:]
+                        cont2 = self.lines[1].strip()
                     if cont2.startswith('&'):
                         cont2_index = 0
                     else:
@@ -239,6 +247,9 @@ class F90File(object):
                 while (cont_index != -1 and (comm_index == -1 or comm_index > cont_index)) or \
                         (cont2_index != -1):
                     cont2 = self.lines[1].strip()
+                    while (cont2 == '' and len(self.lines) != 2): # issue105 - rm empty lines
+                        self.lines[1:] = self.lines[2:]
+                        cont2 = self.lines[1].strip()
                     if cont2.startswith('&'):
                         cont2 = cont2[1:].strip()
 
@@ -253,9 +264,15 @@ class F90File(object):
                     self.lines = [cont] + self.lines[2:]
                     self._lineno = self._lineno + 1
                     cline = self.lines[0].strip()
+                    while (cline == '' and len(self.lines) != 1): # issue105 - rm empty lines
+                        self.lines = self.lines[1:]
+                        cline = self.lines[0].strip()
                     cont_index = cline.find('&')
                     try:
                         cont2 = self.lines[1].strip()
+                        while (cont2 == '' and len(self.lines) != 2): # issue105 - rm empty lines
+                            self.lines[1:] = self.lines[2:]
+                            cont2 = self.lines[1].strip()
                         if cont2.startswith('&'):
                             cont2_index = 0
                         else:
@@ -268,8 +285,7 @@ class F90File(object):
             comm_index = cline.find('!')
             if comm_index != -1:
                 self.lines = [cline[:comm_index], cline[comm_index:]] + self.lines[1:]
-                cline = self.lines[0]
-                cline = cline.strip()
+                cline = self.lines[0].strip()
                 # jrk33 - changed comment mark from '!*FD' to '!%'
                 if self.lines[1].find('!%') != -1:
                     self.lines = [self.lines[0]] + ['_FD' + self.lines[1][2:]] + self.lines[2:]
@@ -344,6 +360,7 @@ def check_cont(cline, file):
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 def check_program(cl, file):
+    global doc_plugin_module
     global hold_doc
 
     out = Program()
@@ -428,6 +445,7 @@ def check_program(cl, file):
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 def check_module(cl, file):
+    global doc_plugin_module
     global hold_doc
 
     out = Module()
@@ -452,7 +470,7 @@ def check_module(cl, file):
         # Get next line, and check each possibility in turn
 
         cl = file.next()
-
+        
         while re.match(module_end, cl) == None:
 
             # contains statement
@@ -596,10 +614,11 @@ def check_module(cl, file):
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 def check_subt(cl, file, grab_hold_doc=True):
+    global doc_plugin_module
     global hold_doc
 
     out = Subroutine()
-        
+
     if re.match(subt, cl) != None:
 
         out.filename = file.filename
@@ -657,6 +676,8 @@ def check_subt(cl, file, grab_hold_doc=True):
 
         cl = file.next()
 
+        cont = 0
+        subroutine_lines = []
         while True:
 
             # Use statement
@@ -682,36 +703,62 @@ def check_subt(cl, file, grab_hold_doc=True):
                     cl = file.next()
                     continue
 
-            # Doc comment
-            check = check_doc(cl, file)
-            if check[0] != None:
-                out.doc.append(check[0])
+            # contains statement
+            check = check_cont(cl, file)
+            if check[0] is not None:
+                cont = 1
                 cl = check[1]
-                continue
 
-            if has_args:
-                # Argument
-                check = check_arg(cl, file)
+            if cont == 0:
+
+                # Doc comment
+                check = check_doc(cl, file)
                 if check[0] != None:
-                    for a in check[0]:
-                        out.arguments.append(a)
+                    out.doc.append(check[0])
                     cl = check[1]
                     continue
 
-                # Interface section
-                check = check_interface_decl(cl, file)
-                if check[0] != None:
-                    for a in check[0].procedures:
-                        out.arguments.append(a)
+                if has_args:
+                    # Argument
+                    check = check_arg(cl, file)
+                    if check[0] != None:
+                        for a in check[0]:
+                            out.arguments.append(a)
+                        cl = check[1]
+                        continue
+
+                    # Interface section
+                    check = check_interface_decl(cl, file)
+                    if check[0] != None:
+                        for a in check[0].procedures:
+                            out.arguments.append(a)
+                        cl = check[1]
+                        continue
+
+            else:
+
+                # Subroutine definition
+                check = check_subt(cl, file)
+                if check[0] is not None:
+                    # Discard contained subroutine
                     cl = check[1]
-                    continue
+
+                # Function definition
+                check = check_funct(cl, file)
+                if check[0] is not None:
+                    # Discard contained function
+                    cl = check[1]
 
             m = subt_end.match(cl)
 
+            subroutine_lines.append(cl)
             if m == None:
                 cl = file.next()
                 continue
             else:
+                if doc_plugin_module is not None:
+                    extra_doc = doc_plugin_module.doc_plugin(subroutine_lines, out.name, 'subroutine')
+                    out.doc.extend(extra_doc)
                 break
 
             # If no joy, get next line
@@ -776,6 +823,7 @@ def implicit_type_rule(var):
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 def check_funct(cl, file, grab_hold_doc=True):
+    global doc_plugin_module
     global hold_doc
 
     out = Function()
@@ -858,6 +906,7 @@ def check_funct(cl, file, grab_hold_doc=True):
 
         cl = file.next()
 
+        subroutine_lines = []
         while True:
 
             # Use statement
@@ -915,11 +964,14 @@ def check_funct(cl, file, grab_hold_doc=True):
 
             m = re.match(funct_end, cl)
 
+            subroutine_lines.append(cl)
             if m == None:
                 cl = file.next()
                 continue
-
             else:
+                if doc_plugin_module is not None:
+                    extra_doc = doc_plugin_module.doc_plugin(subroutine_lines, out.name, 'function')
+                    out.doc.extend(extra_doc)
                 break
 
             cl = file.next()
@@ -1089,6 +1141,7 @@ def check_interface(cl, file):
 
 
 def check_interface_decl(cl, file):
+    global doc_plugin_module
     out = Interface()
 
     if cl and re.match(iface, cl) != None:
@@ -1100,14 +1153,14 @@ def check_interface_decl(cl, file):
         while re.match(iface_end, cl) == None:
 
             # Subroutine declaration
-            check = check_subt(cl, file, grab_hold_doc=False)
+            check = check_subt(cl, file)
             if check[0] != None:
                 out.procedures.append(check[0])
                 cl = check[1]
                 continue
 
             # Function declaration
-            check = check_funct(cl, file, grab_hold_doc=False)
+            check = check_funct(cl, file)
             if check[0] != None:
                 out.procedures.append(check[0])
                 cl = check[1]
@@ -1302,8 +1355,16 @@ def check_arg(cl, file):
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 
-def read_files(args):
+def read_files(args, doc_plugin_filename=None):
+    global doc_plugin_module
     global hold_doc
+
+    if doc_plugin_filename is not None:
+        sys.path.insert(0, os.path.dirname(doc_plugin_filename))
+        doc_plugin_module = __import__(os.path.splitext(os.path.basename(doc_plugin_filename))[0])
+        sys.path = sys.path[1:]
+    else:
+        doc_plugin_module = None
 
     root = Root()
 

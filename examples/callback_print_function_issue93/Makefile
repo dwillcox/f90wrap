@@ -46,8 +46,13 @@ endif
 # PROJECT CONFIG, do not put spaced behind the variables
 # ======================================================================
 # Python module name
-PYTHON_MODN = issue50
+PYTHON_MODN = CBF
 # mapping between Fortran and C types
+# Note that in this case this may be superfluous, and at any rate
+# 'character' : {'': 'char'}
+# was removed from the kind_map as this was leading to:
+# f90wrap: RuntimeError('Unknown combination of type "character" and kind "1024" - add to kind map and try again')
+# I could not locate useful documentation for what to do.
 KIND_MAP = kind_map
 
 #=======================================================================
@@ -61,7 +66,7 @@ KIND_MAP = kind_map
 #=======================================================================
 
 # names (without suffix), f90 sources
-LIBSRC_SOURCES = test
+LIBSRC_SOURCES = cback caller
 
 # file names
 LIBSRC_FILES = $(addsuffix .f90,${LIBSRC_SOURCES})
@@ -77,7 +82,8 @@ LIBSRC_FPP_FILES = $(addsuffix .fpp,${LIBSRC_SOURCES})
 #=======================================================================
 
 # names (without suffix), f90 sources
-LIBSRC_WRAP_SOURCES = test
+LIBSRC_WRAP_SOURCES = cback caller
+# LIBSRC_WRAP_SOURCES = caller
 
 # file names
 LIBSRC_WRAP_FILES = $(addsuffix .f90,${LIBSRC_WRAP_SOURCES})
@@ -101,13 +107,12 @@ LIBSRC_WRAP_FPP_FILES = $(addsuffix .fpp,${LIBSRC_WRAP_SOURCES})
 .PHONY: all clean
 
 
-all: _${PYTHON_MODN}.so test
+all: _${PYTHON_MODN}.so _${PYTHON_MODN}_pkg.so test
 
 
 clean:
-	-rm -f ${LIBSRC_OBJECTS} ${LIBSRC_FPP_FILES} libsrc.a _${PYTHON_MODN}*.so \
-	 *.mod *.fpp f90wrap*.f90 f90wrap*.o *.o ${PYTHON_MODN}.py
-	-rm -rf src.*/ .f2py_f2cmap .libs/ __pycache__/
+	-rm ${LIBSRC_OBJECTS} ${LIBSRC_FPP_FILES} libsrc.a _${PYTHON_MODN}*.so \
+	*.mod *.fpp f90wrap*.f90 f90wrap*.o *.o
 
 
 .f90.o:
@@ -127,10 +132,13 @@ libsrc.a: ${LIBSRC_OBJECTS}
 
 
 _${PYTHON_MODN}.so: libsrc.a ${LIBSRC_FPP_FILES}
-	f90wrap -m ${PYTHON_MODN} ${LIBSRC_WRAP_FPP_FILES} -k ${KIND_MAP} -v
-	f2py-f90wrap --fcompiler=$(FCOMP) --build-dir . -c -m _${PYTHON_MODN} -L. -lsrc f90wrap*.f90
+	f90wrap -m ${PYTHON_MODN} ${LIBSRC_WRAP_FPP_FILES} -k ${KIND_MAP} -v  --callback pyfunc_print
+	f2py-f90wrap --fcompiler=$(FCOMP) --build-dir . -c -m _${PYTHON_MODN} -L. -lsrc f90wrap*.f90 ${LIBSRC_WRAP_FILES}
 
 
-test: _${PYTHON_MODN}.so
+_${PYTHON_MODN}_pkg.so: libsrc.a ${LIBSRC_FPP_FILES}
+	f90wrap -m ${PYTHON_MODN}_pkg ${LIBSRC_WRAP_FPP_FILES} -k ${KIND_MAP} -v -P --callback pyfunc_print
+	f2py-f90wrap --fcompiler=$(FCOMP) --build-dir . -c -m _${PYTHON_MODN}_pkg -L. -lsrc f90wrap*.f90 ${LIBSRC_WRAP_FILES}
+
+test: _${PYTHON_MODN}_pkg.so _${PYTHON_MODN}.so
 	${PYTHON} tests.py
-
